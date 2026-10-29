@@ -18,6 +18,7 @@ import '../editor/export.dart';
 import '../editor/narration.dart';
 import '../editor/preview_audio.dart';
 import '../editor/project.dart';
+import '../editor/sfx_library.dart';
 import 'library_panel.dart';
 import 'widgets/window_chrome.dart';
 
@@ -281,6 +282,34 @@ class _EditorPageState extends State<EditorPage> {
     setState(() => _selectedId = clip.id);
   }
 
+  Future<void> _addSfx() async {
+    final ff = Ffmpeg.instance;
+    if (ff == null) return;
+    final c = AppScope.of(context);
+    final lib = SfxLibrary(ff, c.settings.outputDir);
+    await _player.pause();
+    if (!mounted) return;
+    final item = await showDialog<SfxItem>(
+      context: context,
+      builder: (_) => _SfxDialog(library: lib),
+    );
+    if (item == null || !mounted) return;
+    final start = _posS;
+    final clip = AudioClip(
+      id: newClipId(),
+      start: start,
+      end: math.min(_dur, start + math.max(0.3, item.duration)),
+      path: item.path,
+      fileDuration: item.duration,
+      audioKind: AudioKind.sfx,
+      name: item.name,
+      volume: 0.9,
+    );
+    _mutate((p) => p.clips.add(clip));
+    setState(() => _selectedId = clip.id);
+    _flash('Efecto "${item.name}" agregado en ${_fmt(start)}');
+  }
+
   Future<void> _toggleNarration() async {
     if (_narration != null) {
       await _stopNarration();
@@ -414,6 +443,7 @@ class _EditorPageState extends State<EditorPage> {
           const SingleActivator(LogicalKeyboardKey.keyO): () => setState(() => _selEnd = _posS.clamp(_selStart, _dur)),
           const SingleActivator(LogicalKeyboardKey.delete): _deleteSelected,
           const SingleActivator(LogicalKeyboardKey.keyT): _addText,
+          const SingleActivator(LogicalKeyboardKey.keyE): _addSfx,
           const SingleActivator(LogicalKeyboardKey.keyR): _toggleNarration,
           const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undoAction,
           const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redoAction,
@@ -622,6 +652,8 @@ class _EditorPageState extends State<EditorPage> {
         const SizedBox(width: 8),
         _ToolButton(icon: Icons.library_music_rounded, label: 'Música / audio', onTap: _addAudioFile),
         const SizedBox(width: 8),
+        _ToolButton(icon: Icons.surround_sound_rounded, label: 'Efectos (E)', onTap: _addSfx),
+        const SizedBox(width: 8),
         _ToolButton(icon: Icons.title_rounded, label: 'Texto (T)', onTap: _addText),
         const SizedBox(width: 8),
         _ToolButton(icon: Icons.image_rounded, label: 'Imagen / logo', onTap: _addImage),
@@ -659,7 +691,7 @@ class _EditorPageState extends State<EditorPage> {
             )
           else
             const Text(
-              'Espacio: reproducir · I/O: marcar tramo · Supr: eliminar · T: texto · R: narración · arrastrá textos e imágenes sobre el video',
+              'Espacio: reproducir · I/O: marcar tramo · Supr: eliminar · T: texto · E: efecto · R: narración · arrastrá textos e imágenes sobre el video',
               style: TextStyle(color: NjbColors.textMuted, fontSize: 12),
               overflow: TextOverflow.ellipsis,
             ),
@@ -999,7 +1031,13 @@ class _TimelineState extends State<_Timeline> {
               left: px(c.start),
               width: math.max(6, px(c.end) - px(c.start)),
               height: _trackH,
-              color: c is AudioClip && c.audioKind == AudioKind.narration ? NjbColors.amber : color,
+              color: c is AudioClip
+                  ? switch (c.audioKind) {
+                      AudioKind.narration => NjbColors.amber,
+                      AudioKind.sfx => const Color(0xFFFF8A3D),
+                      AudioKind.music => color,
+                    }
+                  : color,
               selected: c.id == widget.selectedId,
               pxPerSec: w / dur,
               maxEnd: dur,
@@ -1039,7 +1077,7 @@ class _ClipBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final maxLen = clip is AudioClip ? (clip as AudioClip).fileDuration - (clip as AudioClip).offset : double.infinity;
+    final maxLen = clip is AudioClip ? (clip as AudioClip).maxLength : double.infinity;
     return Positioned(
       left: left,
       width: width,
@@ -1304,7 +1342,11 @@ class _Inspector extends StatelessWidget {
     final header = switch (c.kind) {
       ClipKind.text => 'Texto',
       ClipKind.image => 'Imagen',
-      ClipKind.audio => (c as AudioClip).audioKind == AudioKind.narration ? 'Narración' : 'Audio',
+      ClipKind.audio => switch ((c as AudioClip).audioKind) {
+          AudioKind.narration => 'Narración',
+          AudioKind.sfx => 'Efecto de sonido',
+          AudioKind.music => 'Música / audio',
+        },
     };
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _title(header, trailing: IconButton(onPressed: onClose, iconSize: 18, icon: const Icon(Icons.close_rounded))),
@@ -1313,7 +1355,7 @@ class _Inspector extends StatelessWidget {
       if (c is ImageClip) ..._imageFields(c),
       if (c is AudioClip) ..._audioFields(c),
       const Divider(height: 24),
-      _timeRow(c, maxLen: c is AudioClip ? c.fileDuration - c.offset : null),
+      _timeRow(c, maxLen: c is AudioClip && !c.loop ? c.fileDuration - c.offset : null),
       const SizedBox(height: 12),
       SizedBox(
         width: double.infinity,
@@ -1398,14 +1440,31 @@ class _Inspector extends StatelessWidget {
         _slider('Salida suave', a.fadeOut, 0, 5, (v) => a.fadeOut = v, show: (v) => '${v.toStringAsFixed(1)} s'),
         _slider('Empezar el archivo desde', a.offset, 0, math.max(0.1, a.fileDuration - 0.5), (v) {
           a.offset = v;
-          final maxLen = a.fileDuration - a.offset;
+          final maxLen = a.maxLength;
           if (a.end - a.start > maxLen) a.end = a.start + maxLen;
         }, show: fmt),
+        _NumField(
+          key: ValueKey('dur_${a.id}'),
+          label: 'Duración del clip (s)',
+          value: a.end - a.start,
+          onSubmit: (v) {
+            onChanged(true);
+            final len = v.clamp(0.2, math.min(a.maxLength, project.duration - a.start));
+            a.end = a.start + len;
+            onChanged(false);
+          },
+        ),
+        _switch('Repetir el sonido hasta cubrir la duración', a.loop, (v) {
+          a.loop = v;
+          if (!v && a.end - a.start > a.maxLength) a.end = a.start + a.maxLength;
+        }),
+        const SizedBox(height: 4),
         SegmentedButton<AudioKind>(
           style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact, textStyle: const TextStyle(fontSize: 12)),
           segments: const [
             ButtonSegment(value: AudioKind.narration, label: Text('Narración')),
             ButtonSegment(value: AudioKind.music, label: Text('Música')),
+            ButtonSegment(value: AudioKind.sfx, label: Text('Efecto')),
           ],
           selected: {a.audioKind},
           onSelectionChanged: (v) {
@@ -1420,7 +1479,7 @@ class _Inspector extends StatelessWidget {
 }
 
 class _NumField extends StatefulWidget {
-  const _NumField({required this.label, required this.value, required this.onSubmit});
+  const _NumField({super.key, required this.label, required this.value, required this.onSubmit});
   final String label;
   final double value;
   final ValueChanged<double> onSubmit;
@@ -1508,6 +1567,137 @@ class _TextAreaState extends State<_TextArea> {
       style: const TextStyle(fontSize: 13),
       decoration: const InputDecoration(labelText: 'Texto', isDense: true),
       onChanged: widget.onChanged,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Diálogo de efectos de sonido
+// ---------------------------------------------------------------------------
+
+class _SfxDialog extends StatefulWidget {
+  const _SfxDialog({required this.library});
+  final SfxLibrary library;
+
+  @override
+  State<_SfxDialog> createState() => _SfxDialogState();
+}
+
+class _SfxDialogState extends State<_SfxDialog> {
+  List<SfxItem>? _items;
+  String _filter = '';
+  String? _playingPath;
+  final Player _preview = Player();
+  StreamSubscription? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = _preview.stream.completed.listen((done) {
+      if (done && mounted) setState(() => _playingPath = null);
+    });
+    _load();
+  }
+
+  Future<void> _load() async {
+    await widget.library.ensureBuiltins();
+    final items = await widget.library.list();
+    if (mounted) setState(() => _items = items);
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _preview.dispose();
+    super.dispose();
+  }
+
+  Future<void> _togglePreview(SfxItem item) async {
+    if (_playingPath == item.path) {
+      await _preview.stop();
+      setState(() => _playingPath = null);
+      return;
+    }
+    setState(() => _playingPath = item.path);
+    await _preview.open(Media(item.path), play: true);
+  }
+
+  String _fmt(double s) => s >= 10 ? '${s.toStringAsFixed(0)} s' : '${s.toStringAsFixed(1)} s';
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+    final filtered = items?.where((i) => i.name.toLowerCase().contains(_filter.toLowerCase())).toList();
+    return AlertDialog(
+      title: Row(children: [
+        const Icon(Icons.surround_sound_rounded, color: NjbColors.cyan),
+        const SizedBox(width: 10),
+        const Expanded(child: Text('Efectos de sonido')),
+        TextButton.icon(
+          onPressed: () => LibraryActions.openFolder(widget.library.folder),
+          icon: const Icon(Icons.folder_open_rounded, size: 16),
+          label: const Text('Carpeta', style: TextStyle(fontSize: 12)),
+        ),
+        TextButton.icon(
+          onPressed: () => Process.start('explorer.exe', ['https://pixabay.com/es/sound-effects/']),
+          icon: const Icon(Icons.download_rounded, size: 16),
+          label: const Text('Más efectos gratis', style: TextStyle(fontSize: 12)),
+        ),
+      ]),
+      content: SizedBox(
+        width: 520,
+        height: 460,
+        child: Column(children: [
+          TextField(
+            autofocus: true,
+            decoration: const InputDecoration(prefixIcon: Icon(Icons.search_rounded), hintText: 'Buscar…', isDense: true),
+            onChanged: (v) => setState(() => _filter = v),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Copiá tus propios MP3/WAV en la carpeta "Efectos" y aparecen acá. Los incluidos están sintetizados.',
+            style: TextStyle(fontSize: 11.5, color: NjbColors.textMuted),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: items == null
+                ? const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 10),
+                    Text('Preparando efectos…', style: TextStyle(color: NjbColors.textMuted)),
+                  ]))
+                : filtered!.isEmpty
+                    ? const Center(child: Text('Sin resultados', style: TextStyle(color: NjbColors.textMuted)))
+                    : ListView.builder(
+                        itemCount: filtered.length,
+                        itemBuilder: (_, i) {
+                          final it = filtered[i];
+                          final playing = _playingPath == it.path;
+                          return ListTile(
+                            dense: true,
+                            leading: IconButton(
+                              tooltip: playing ? 'Detener' : 'Escuchar',
+                              onPressed: () => _togglePreview(it),
+                              icon: Icon(playing ? Icons.stop_circle_rounded : Icons.play_circle_fill_rounded,
+                                  color: playing ? NjbColors.red : NjbColors.cyan, size: 28),
+                            ),
+                            title: Text(it.name),
+                            subtitle: Text(it.builtin ? 'Incluido · ${_fmt(it.duration)}' : 'Mío · ${_fmt(it.duration)}',
+                                style: const TextStyle(fontSize: 11, color: NjbColors.textMuted)),
+                            trailing: FilledButton.tonal(
+                              onPressed: () => Navigator.pop(context, it),
+                              child: const Text('Agregar'),
+                            ),
+                            onTap: () => Navigator.pop(context, it),
+                          );
+                        },
+                      ),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar')),
+      ],
     );
   }
 }

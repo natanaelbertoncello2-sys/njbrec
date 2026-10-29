@@ -187,12 +187,19 @@ class ProjectExporter {
       if (!File(c.path).existsSync()) continue;
       final a = project.toOutput(c.start);
       final b = project.toOutput(c.end);
-      final dur = (b - a).clamp(0.0, c.fileDuration - c.offset);
+      final dur = c.loop ? (b - a) : (b - a).clamp(0.0, c.fileDuration - c.offset);
       if (dur < 0.05) continue;
       inputs.addAll(['-i', c.path]);
       final idx = inputIndex++;
       final parts = <String>[
-        'atrim=start=${_f(c.offset)}:end=${_f(c.offset + dur)}',
+        if (c.loop) ...[
+          // Repite el archivo (desde offset) hasta cubrir la duración del clip.
+          'atrim=start=${_f(c.offset)}',
+          'asetpts=PTS-STARTPTS',
+          'aloop=loop=-1:size=2147483647',
+          'atrim=start=0:end=${_f(dur)}',
+        ] else
+          'atrim=start=${_f(c.offset)}:end=${_f(c.offset + dur)}',
         'asetpts=PTS-STARTPTS',
         'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo',
         'volume=${_f(c.volume)}',

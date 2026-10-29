@@ -56,7 +56,23 @@ void main() {
       fadeOut: 0.5,
     ));
 
+    project.clips.add(AudioClip(
+      id: 'a2',
+      start: 0,
+      end: d, // más largo que el archivo: se repite
+      path: p.join(Directory.current.path, 'assets', 'branding', 'logo_mark.png'), // se reemplaza abajo
+      fileDuration: 1,
+      audioKind: AudioKind.sfx,
+      loop: true,
+      volume: 0.5,
+    ));
+
     final tmp = Directory.systemTemp.createTempSync('njbrec_export_test');
+    // Efecto sintetizado de 1 s para probar la repetición.
+    final sfx = p.join(tmp.path, 'pop.wav');
+    final gen = await ff.run(['-f', 'lavfi', '-i', 'sine=f=600:r=48000', '-t', '1', '-c:a', 'pcm_s16le', sfx]);
+    expect(gen.ok, isTrue, reason: gen.tail);
+    (project.clips.last as AudioClip).path = sfx;
     final out = p.join(tmp.path, 'salida.mp4');
     var lastProgress = 0.0;
     final r = await ProjectExporter(ff, project, info).run(

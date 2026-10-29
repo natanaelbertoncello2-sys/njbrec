@@ -143,7 +143,7 @@ class ImageClip extends Clip {
       );
 }
 
-enum AudioKind { narration, music }
+enum AudioKind { narration, music, sfx }
 
 class AudioClip extends Clip {
   AudioClip({
@@ -157,6 +157,7 @@ class AudioClip extends Clip {
     this.volume = 1.0,
     this.fadeIn = 0,
     this.fadeOut = 0,
+    this.loop = false,
     String? name,
   }) : name = name ?? path.split(RegExp(r'[\\/]')).last;
 
@@ -168,6 +169,12 @@ class AudioClip extends Clip {
   double volume;
   double fadeIn;
   double fadeOut;
+
+  /// Repite el archivo hasta cubrir toda la duración del clip.
+  bool loop;
+
+  /// Duración máxima que puede tener el clip.
+  double get maxLength => loop ? double.infinity : fileDuration - offset;
 
   @override
   ClipKind get kind => ClipKind.audio;
@@ -188,6 +195,7 @@ class AudioClip extends Clip {
         'volume': volume,
         'fadeIn': fadeIn,
         'fadeOut': fadeOut,
+        'loop': loop,
       };
 
   static AudioClip fromJson(Map<String, dynamic> j) => AudioClip(
@@ -202,6 +210,7 @@ class AudioClip extends Clip {
         volume: (j['volume'] as num).toDouble(),
         fadeIn: (j['fadeIn'] as num).toDouble(),
         fadeOut: (j['fadeOut'] as num).toDouble(),
+        loop: j['loop'] as bool? ?? false,
       );
 }
 

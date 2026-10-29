@@ -23,16 +23,22 @@ class PreviewAudio {
       final player = _players.putIfAbsent(clip.id, () => Player());
       final wasPlaying = _playing[clip.id] ?? false;
       if (inside) {
-        final target = Duration(milliseconds: ((clip.offset + local) * 1000).round());
+        // Con repetición, la posición dentro del archivo vuelve a empezar.
+        final span = clip.fileDuration - clip.offset;
+        final inFile = clip.loop && span > 0 ? clip.offset + (local % span) : clip.offset + local;
+        final target = Duration(milliseconds: (inFile * 1000).round());
         if (!wasPlaying) {
           await player.open(Media(clip.path), play: false);
+          await player.setPlaylistMode(clip.loop ? PlaylistMode.loop : PlaylistMode.none);
           await player.setVolume((clip.volume * 100).clamp(0, 100));
           await player.seek(target);
           await player.play();
           _playing[clip.id] = true;
         } else {
           final drift = (player.state.position - target).inMilliseconds.abs();
-          if (drift > 350) await player.seek(target);
+          if (drift > 350 && !(clip.loop && drift > (span * 1000) - 400)) {
+            await player.seek(target);
+          }
           await player.setVolume((clip.volume * 100).clamp(0, 100));
         }
       } else if (wasPlaying) {

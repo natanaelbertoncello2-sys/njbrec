@@ -26,8 +26,13 @@ y exportar.
     mientras ves el video; el clip queda en la posición del cabezal y se
     puede mover, recortar y ajustar. El audio original baja solo mientras
     habla la narración.
-  - **Música / efectos**: importá MP3/WAV/M4A, con volumen, entrada y salida
-    suave y punto de inicio dentro del archivo.
+  - **Música**: importá MP3/WAV/M4A, con volumen, entrada y salida suave y
+    punto de inicio dentro del archivo.
+  - **Efectos de sonido** (tecla E): biblioteca con efectos incluidos
+    (viento, lluvia, mar, golpe de puerta, whoosh, campanita, aplausos,
+    sirena, tambor, latido, etc.), escucha previa, duración a elección y
+    opción de repetir el sonido hasta cubrir el tiempo que quieras. Cualquier
+    MP3/WAV que copies en `Videos\NJB Rec\Efectos` aparece en la lista.
   - **Textos**: títulos con tamaño, color, fondo, negrita y aparición suave;
     se arrastran directamente sobre el video.
   - **Imágenes / logos**: PNG/JPG con ancho y opacidad, también arrastrables.
