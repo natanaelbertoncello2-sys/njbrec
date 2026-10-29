@@ -42,6 +42,20 @@ flutter run -d windows            # desarrollo
 powershell -ExecutionPolicy Bypass -File tool/build_release.ps1   # release + zip en dist/
 ```
 
+## Publicar una nueva versión
+
+1. Subí el número en `pubspec.yaml` (`version: 1.0.1+2`).
+2. Commit y push a `main`.
+3. Creá y subí un tag: `git tag v1.0.1 && git push --tags`.
+
+GitHub Actions (`.github/workflows/release.yml`) compila, descarga ffmpeg,
+arma el instalador y publica la release con el `.exe` y el zip portable.
+Para hacerlo localmente: `tool/build_release.ps1` deja ambos archivos en
+`dist/` y después `gh release create vX.Y.Z dist/*`.
+
+Las descargas quedan en https://github.com/natanaelbertoncello2-sys/njbrec/releases
+(también desde el botón "Buscar actualizaciones" en Acerca de).
+
 ## Estructura
 
 ```
