@@ -29,13 +29,11 @@ Compress-Archive -Path "$src\*" -DestinationPath $zip
 Write-Output "Zip portable: $zip"
 
 # Instalador (Inno Setup)
-$iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-if (-not $iscc) {
-  $candidate = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-  if (Test-Path $candidate) { $iscc = Get-Item $candidate }
-}
-if ($iscc) {
-  $isccPath = $iscc.Source
+$isccPath = $null
+$cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+if ($cmd) { $isccPath = $cmd.Source }
+elseif (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe') { $isccPath = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' }
+if ($isccPath) {
   $issFile = Join-Path $root 'installer\njbrec.iss'
   & $isccPath $issFile "/DAppVersion=$version"
   if ($LASTEXITCODE -ne 0) { throw 'Inno Setup falló.' }
