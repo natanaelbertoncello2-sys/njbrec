@@ -35,7 +35,9 @@ if (-not $iscc) {
   if (Test-Path $candidate) { $iscc = Get-Item $candidate }
 }
 if ($iscc) {
-  & $iscc.Source "installer\njbrec.iss" "/DAppVersion=$version" | Select-Object -Last 3
+  $isccPath = $iscc.Source
+  $issFile = Join-Path $root 'installer\njbrec.iss'
+  & $isccPath $issFile "/DAppVersion=$version"
   if ($LASTEXITCODE -ne 0) { throw 'Inno Setup falló.' }
   Write-Output "Instalador: $distDir\NJB-Rec-Setup-$version.exe"
 } else {
