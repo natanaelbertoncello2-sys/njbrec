@@ -46,6 +46,17 @@ y exportar.
   junto al ejecutable; si no, la app lo busca en el `PATH` o en la ruta que se
   indique en **Ajustes → ffmpeg**.
 
+## Si no abre en otra PC
+
+- **Windows SmartScreen** ("Windows protegió su PC"): el instalador no está
+  firmado. Clic en *Más información → Ejecutar de todas formas*.
+- **Faltaba el runtime de Visual C++**: desde la 1.1.1 las DLL
+  (`msvcp140`, `vcruntime140`, `vcruntime140_1`) van incluidas junto al
+  ejecutable, así que ya no hace falta instalar nada.
+- Necesita Windows 10/11 de 64 bits con una GPU que soporte Direct3D 11.
+- Si abre pero no graba: revisá en **Ajustes → ffmpeg** que figure
+  "Detectado".
+
 ## Compilar
 
 ```powershell

@@ -109,6 +109,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg/ffmpeg.exe")
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 endif()
 
+# NJB Rec: runtime de Visual C++ junto al ejecutable, para que la app abra en
+# equipos que no lo tienen instalado.
+file(GLOB NJB_REDIST_DLLS "${CMAKE_CURRENT_SOURCE_DIR}/redist/*.dll")
+if(NJB_REDIST_DLLS)
+  install(FILES ${NJB_REDIST_DLLS}
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+
 # Install the AOT library on non-Debug builds only.
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
