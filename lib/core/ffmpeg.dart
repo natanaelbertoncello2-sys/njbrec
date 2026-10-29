@@ -18,6 +18,24 @@ class FfmpegResult {
   }
 }
 
+class MediaInfo {
+  const MediaInfo({
+    required this.duration,
+    required this.width,
+    required this.height,
+    required this.fps,
+    required this.hasAudio,
+    required this.hasVideo,
+  });
+  final Duration duration;
+  final int width;
+  final int height;
+  final double fps;
+  final bool hasAudio;
+  final bool hasVideo;
+  double get seconds => duration.inMilliseconds / 1000;
+}
+
 /// Localiza y ejecuta ffmpeg.
 class Ffmpeg {
   Ffmpeg._(this.path);
@@ -96,18 +114,44 @@ class Ffmpeg {
   }
 
   /// Duración de un archivo multimedia.
-  Future<Duration?> probeDuration(String file) async {
-    final r = await Process.run(path, ['-hide_banner', '-i', file]);
-    final m = RegExp(r'Duration:\s*(\d+):(\d+):(\d+)\.(\d+)')
-        .firstMatch('${r.stderr}');
+  Future<Duration?> probeDuration(String file) async =>
+      (await probe(file))?.duration;
+
+  /// Información básica de un archivo (duración, tamaño, audio, fps).
+  Future<MediaInfo?> probe(String file) async {
+    final r = await Process.run(path, ['-hide_banner', '-i', file],
+        stderrEncoding: utf8, stdoutEncoding: utf8);
+    final text = '${r.stderr}';
+    final m = RegExp(r'Duration:\s*(\d+):(\d+):(\d+)\.(\d+)').firstMatch(text);
     if (m == null) return null;
     final frac = m.group(4)!;
     final ms = (int.parse(frac) * 1000 / (pow10(frac.length))).round();
-    return Duration(
+    final duration = Duration(
       hours: int.parse(m.group(1)!),
       minutes: int.parse(m.group(2)!),
       seconds: int.parse(m.group(3)!),
       milliseconds: ms,
+    );
+    int width = 0, height = 0;
+    double fps = 30;
+    final videoLine = RegExp(r'Stream #\d+:\d+.*Video:.*').firstMatch(text)?.group(0);
+    if (videoLine != null) {
+      final dim = RegExp(r'\b(\d{2,5})x(\d{2,5})\b').firstMatch(videoLine);
+      if (dim != null) {
+        width = int.parse(dim.group(1)!);
+        height = int.parse(dim.group(2)!);
+      }
+      final f = RegExp(r'([\d.]+) fps').firstMatch(videoLine);
+      if (f != null) fps = double.tryParse(f.group(1)!) ?? 30;
+    }
+    final hasAudio = RegExp(r'Stream #\d+:\d+.*Audio:').hasMatch(text);
+    return MediaInfo(
+      duration: duration,
+      width: width,
+      height: height,
+      fps: fps,
+      hasAudio: hasAudio,
+      hasVideo: videoLine != null && width > 0,
     );
   }
 

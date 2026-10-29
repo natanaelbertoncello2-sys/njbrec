@@ -19,9 +19,22 @@ y exportar.
   - `Ctrl + Shift + R` iniciar / detener
   - `Ctrl + Shift + P` pausar / reanudar
   - `Ctrl + Shift + H` mostrar / ocultar la barra flotante
-- **Editor**: recorte por inicio/fin con miniaturas, repetición del rango,
-  silenciar, captura de cuadro y exportación a MP4 (corte rápido o preciso),
-  GIF o MP3.
+- **Editor multipista**:
+  - **Cortes**: marcá tramos con I/O y eliminalos (varios por video, con
+    restaurar, deshacer/rehacer).
+  - **Narración**: grabá tu voz con el micrófono desde el editor (tecla R)
+    mientras ves el video; el clip queda en la posición del cabezal y se
+    puede mover, recortar y ajustar. El audio original baja solo mientras
+    habla la narración.
+  - **Música / efectos**: importá MP3/WAV/M4A, con volumen, entrada y salida
+    suave y punto de inicio dentro del archivo.
+  - **Textos**: títulos con tamaño, color, fondo, negrita y aparición suave;
+    se arrastran directamente sobre el video.
+  - **Imágenes / logos**: PNG/JPG con ancho y opacidad, también arrastrables.
+  - Fundido de entrada/salida, volumen o silencio del audio original,
+    captura de cuadro.
+  - Exportación a MP4, GIF o MP3 con todo aplicado. El proyecto se guarda
+    solo junto al video (`<video>.njbproj.json`) para seguir editando después.
 - **Biblioteca**: lista de grabaciones con miniaturas, abrir, editar, mostrar
   en carpeta y eliminar.
 - Calidad, fps y codificador (x264 / NVENC / AMF / QuickSync según el equipo).
@@ -61,6 +74,7 @@ Las descargas quedan en https://github.com/natanaelbertoncello2-sys/njbrec/relea
 ```
 lib/app/        tema, controlador de la app (ventana, bandeja, atajos)
 lib/core/       ffmpeg, grabador por segmentos, ajustes, puente nativo
+lib/editor/     modelo de proyecto, exportador (grafo de filtros ffmpeg), narración
 lib/ui/         pantalla principal, ajustes, biblioteca, barra flotante, editor
 windows/runner/njb_native.cpp   WASAPI loopback + monitores (canal njbrec/native)
 tool/           generación de branding, build y captura de pantalla
