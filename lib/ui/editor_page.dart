@@ -104,15 +104,38 @@ class _EditorPageState extends State<EditorPage> {
     final tmp = await getTemporaryDirectory();
     final dir = Directory(p.join(tmp.path, 'njbrec', 'editor_${DateTime.now().millisecondsSinceEpoch}'));
     await dir.create(recursive: true);
-    final n = (dur / 2).clamp(10, 40).round();
-    final r = await ff.run([
-      '-i', widget.file, '-vf', 'fps=${n / dur},scale=120:-2', '-frames:v', '$n',
-      p.join(dir.path, 't_%03d.jpg'),
-    ]);
-    if (!r.ok || !mounted) return;
-    final files = (await dir.list().toList()).map((e) => e.path).toList()..sort();
-    if (mounted) setState(() => _thumbs = files);
+    // Miniaturas por búsqueda directa (-ss antes de -i): no decodifica el
+    // video completo, así no compite con la reproducción.
+    final n = (dur / 3).clamp(8, 24).round();
+    final files = <String>[];
+    for (var i = 0; i < n; i++) {
+      if (!mounted) return;
+      final t = dur * (i + 0.5) / n;
+      final out = p.join(dir.path, 't_${i.toString().padLeft(3, '0')}.jpg');
+      final r = await ff.run([
+        '-ss', Ffmpeg.formatDuration(Duration(milliseconds: (t * 1000).round())),
+        '-i', widget.file, '-frames:v', '1', '-vf', 'scale=120:-2', '-q:v', '6', out,
+      ]);
+      if (r.ok) files.add(out);
+      if (mounted && (i % 4 == 3 || i == n - 1)) {
+        setState(() {
+          _thumbs = List.of(files);
+          _thumbStrip = null;
+        });
+      }
+    }
   }
+
+  // Tira de miniaturas cacheada: no se reconstruye en cada tick de posición.
+  Widget? _thumbStrip;
+  Widget get _thumbStripWidget => _thumbStrip ??= RepaintBoundary(
+        child: _thumbs.isEmpty
+            ? Container(color: Colors.black26)
+            : Row(children: [
+                for (final t in _thumbs)
+                  Expanded(child: Image.file(File(t), fit: BoxFit.cover, height: 58, gaplessPlayback: true)),
+              ]),
+      );
 
   @override
   void dispose() {
@@ -143,9 +166,20 @@ class _EditorPageState extends State<EditorPage> {
     return '${two(d.inMinutes)}:${two(d.inSeconds % 60)}.${two(cs)}';
   }
 
+  Duration _lastPainted = const Duration(days: -1);
+  bool _syncing = false;
+
   void _onPosition(Duration pos) {
     if (!mounted || _project == null) return;
-    setState(() => _position = pos);
+    _position = pos;
+    // Redibujar como mucho ~25 veces por segundo: media_kit emite la posición
+    // con mucha más frecuencia y reconstruir toda la página en cada tick
+    // hace trabar la reproducción.
+    final delta = (pos - _lastPainted).inMilliseconds.abs();
+    if (delta >= 40 || !_playing) {
+      _lastPainted = pos;
+      setState(() {});
+    }
     final s = pos.inMilliseconds / 1000;
     if (_playing && _narration == null && _p.isCut(s)) {
       final next = _p.skipCut(s);
@@ -156,7 +190,10 @@ class _EditorPageState extends State<EditorPage> {
       }
       return;
     }
-    _previewAudio.sync(_p, s, _playing);
+    if (!_syncing && _p.audios.isNotEmpty) {
+      _syncing = true;
+      _previewAudio.sync(_p, s, _playing).whenComplete(() => _syncing = false);
+    }
   }
 
   Future<void> _seek(double s) =>
@@ -484,7 +521,7 @@ class _EditorPageState extends State<EditorPage> {
                             const SizedBox(height: 8),
                             _Timeline(
                               project: _p,
-                              thumbs: _thumbs,
+                              thumbStrip: _thumbStripWidget,
                               position: _posS,
                               selStart: _selStart,
                               selEnd: _selEnd,
@@ -506,7 +543,7 @@ class _EditorPageState extends State<EditorPage> {
                       ),
                     ),
                     SizedBox(
-                      width: 300,
+                      width: 280,
                       child: _Inspector(
                         project: _p,
                         clip: _selected,
@@ -543,7 +580,9 @@ class _EditorPageState extends State<EditorPage> {
             return Stack(
               fit: StackFit.expand,
               children: [
-                Container(color: Colors.black, child: Video(controller: _video, controls: NoVideoControls)),
+                RepaintBoundary(
+                  child: Container(color: Colors.black, child: Video(controller: _video, controls: NoVideoControls)),
+                ),
                 if (_p.isCut(t))
                   Container(
                     color: Colors.black.withValues(alpha: 0.6),
@@ -596,9 +635,22 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  Widget _buildTransport() {
-    return Row(
+  /// Dos grupos que se reparten el ancho y pasan a otra línea si no entran.
+  Widget _twoGroups(List<Widget> left, List<Widget> right) {
+    return Wrap(
+      alignment: WrapAlignment.spaceBetween,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      runSpacing: 6,
       children: [
+        Wrap(spacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: left),
+        Wrap(spacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: right),
+      ],
+    );
+  }
+
+  Widget _buildTransport() {
+    return _twoGroups(
+      [
         IconButton.filled(
           style: IconButton.styleFrom(backgroundColor: NjbColors.violet),
           onPressed: _togglePlay,
@@ -608,27 +660,23 @@ class _EditorPageState extends State<EditorPage> {
         IconButton(onPressed: () => _seek(0), icon: const Icon(Icons.first_page_rounded), tooltip: 'Al inicio'),
         IconButton(onPressed: () => _seek(_posS - 5), icon: const Icon(Icons.replay_5_rounded), tooltip: '−5 s'),
         IconButton(onPressed: () => _seek(_posS + 5), icon: const Icon(Icons.forward_5_rounded), tooltip: '+5 s'),
-        const SizedBox(width: 10),
         Text('${_fmt(_posS)}  /  ${_fmt(_dur)}',
             style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()], fontWeight: FontWeight.w600)),
-        const SizedBox(width: 10),
         Text('→ salida ${_fmt(_p.outputDuration)}', style: const TextStyle(color: NjbColors.textMuted, fontSize: 12)),
-        const Spacer(),
+      ],
+      [
         IconButton(onPressed: _undo.isEmpty ? null : _undoAction, icon: const Icon(Icons.undo_rounded), tooltip: 'Deshacer (Ctrl+Z)'),
         IconButton(onPressed: _redo.isEmpty ? null : _redoAction, icon: const Icon(Icons.redo_rounded), tooltip: 'Rehacer (Ctrl+Y)'),
-        const SizedBox(width: 8),
         OutlinedButton.icon(
           onPressed: () => setState(() => _selStart = _posS.clamp(0, _selEnd)),
           icon: const Icon(Icons.start_rounded, size: 18),
           label: const Text('Inicio (I)'),
         ),
-        const SizedBox(width: 6),
         OutlinedButton.icon(
           onPressed: () => setState(() => _selEnd = _posS.clamp(_selStart, _dur)),
           icon: const Icon(Icons.keyboard_tab_rounded, size: 18),
           label: const Text('Fin (O)'),
         ),
-        const SizedBox(width: 6),
         OutlinedButton.icon(
           style: OutlinedButton.styleFrom(foregroundColor: NjbColors.red),
           onPressed: _cutSelection,
@@ -641,27 +689,22 @@ class _EditorPageState extends State<EditorPage> {
 
   Widget _buildToolbar() {
     final recording = _narration != null;
-    return Row(
-      children: [
+    return _twoGroups(
+      [
         FilledButton.icon(
           style: FilledButton.styleFrom(backgroundColor: recording ? NjbColors.red : NjbColors.surfaceHigh),
           onPressed: _exporting ? null : _toggleNarration,
           icon: Icon(recording ? Icons.stop_rounded : Icons.mic_rounded, size: 18),
-          label: Text(recording ? 'Terminar narración' : 'Grabar narración (R)'),
+          label: Text(recording ? 'Terminar narración' : 'Narración (R)'),
         ),
-        const SizedBox(width: 8),
-        _ToolButton(icon: Icons.library_music_rounded, label: 'Música / audio', onTap: _addAudioFile),
-        const SizedBox(width: 8),
+        _ToolButton(icon: Icons.library_music_rounded, label: 'Música', onTap: _addAudioFile),
         _ToolButton(icon: Icons.surround_sound_rounded, label: 'Efectos (E)', onTap: _addSfx),
-        const SizedBox(width: 8),
         _ToolButton(icon: Icons.title_rounded, label: 'Texto (T)', onTap: _addText),
-        const SizedBox(width: 8),
-        _ToolButton(icon: Icons.image_rounded, label: 'Imagen / logo', onTap: _addImage),
-        const Spacer(),
-        _ToolButton(icon: Icons.photo_camera_rounded, label: 'Capturar cuadro', onTap: _snapshot),
-        const SizedBox(width: 8),
+        _ToolButton(icon: Icons.image_rounded, label: 'Imagen', onTap: _addImage),
+      ],
+      [
+        _ToolButton(icon: Icons.photo_camera_rounded, label: 'Cuadro', onTap: _snapshot),
         _ToolButton(icon: Icons.folder_open_rounded, label: 'Carpeta', onTap: () => LibraryActions.revealInExplorer(widget.file)),
-        const SizedBox(width: 8),
         FilledButton.icon(
           onPressed: _exporting || recording ? null : _export,
           icon: const Icon(Icons.save_alt_rounded, size: 18),
@@ -809,7 +852,7 @@ class _OverlayWidget extends StatelessWidget {
 class _Timeline extends StatefulWidget {
   const _Timeline({
     required this.project,
-    required this.thumbs,
+    required this.thumbStrip,
     required this.position,
     required this.selStart,
     required this.selEnd,
@@ -823,7 +866,7 @@ class _Timeline extends StatefulWidget {
   });
 
   final EditorProject project;
-  final List<String> thumbs;
+  final Widget thumbStrip;
   final double position;
   final double selStart;
   final double selEnd;
@@ -926,9 +969,7 @@ class _TimelineState extends State<_Timeline> {
                 widget.onSeek(d.localPosition.dx / w * dur);
               },
               onHorizontalDragUpdate: (d) => widget.onSeek(d.localPosition.dx / w * dur),
-              child: widget.thumbs.isEmpty
-                  ? Container(color: Colors.black26)
-                  : Row(children: [for (final t in widget.thumbs) Expanded(child: Image.file(File(t), fit: BoxFit.cover, height: _videoH))]),
+              child: widget.thumbStrip,
             ),
           ),
           // Cortes

@@ -26,7 +26,11 @@ class MediaInfo {
     required this.fps,
     required this.hasAudio,
     required this.hasVideo,
+    this.start = 0,
   });
+
+  /// Marca de tiempo inicial del contenedor (segundos).
+  final double start;
   final Duration duration;
   final int width;
   final int height;
@@ -145,7 +149,9 @@ class Ffmpeg {
       if (f != null) fps = double.tryParse(f.group(1)!) ?? 30;
     }
     final hasAudio = RegExp(r'Stream #\d+:\d+.*Audio:').hasMatch(text);
+    final startMatch = RegExp(r'Duration:[^\n]*start:\s*(-?[\d.]+)').firstMatch(text);
     return MediaInfo(
+      start: startMatch == null ? 0 : (double.tryParse(startMatch.group(1)!) ?? 0),
       duration: duration,
       width: width,
       height: height,

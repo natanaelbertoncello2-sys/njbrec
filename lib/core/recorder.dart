@@ -19,6 +19,13 @@ class _Segment {
   final String video;
   final String? systemWav;
   bool hasMic = false;
+
+  /// Base de tiempo (segundos desde 1970) restada a las marcas de ffmpeg
+  /// (`-output_ts_offset`). Null cuando no se usa reloj de pared (GPU).
+  int? tsBase;
+
+  /// Instante (ms desde 1970) de la primera muestra del WAV del sistema.
+  double wavStartEpochMs = 0;
 }
 
 /// Motor de grabación: pantalla + micrófono (ffmpeg) + audio del sistema
@@ -191,7 +198,7 @@ class Recorder extends ChangeNotifier {
     final dir = _sessionDir;
     _sessionDir = null;
     _segments.clear();
-    if (dir != null) {
+    if (dir != null && Platform.environment['NJBREC_KEEP'] == null) {
       dir.delete(recursive: true).catchError((_) => dir);
     }
   }
@@ -253,6 +260,7 @@ class Recorder extends ChangeNotifier {
 
     return [
       '-f', 'gdigrab',
+      '-use_wallclock_as_timestamps', '1',
       '-framerate', '${s.fps}',
       '-draw_mouse', s.captureCursor ? '1' : '0',
       '-offset_x', '$x',
@@ -288,21 +296,36 @@ class Recorder extends ChangeNotifier {
         ? p.join(_sessionDir!.path, 'sys_${idx.toString().padLeft(3, '0')}.wav')
         : null;
 
+    // Sincronización: video y micrófono usan el reloj de pared y se conservan
+    // las marcas de tiempo (-copyts) restando una base conocida. Así el
+    // micrófono (que tarda ~1 s en abrir) queda alineado con el video, y el
+    // audio del sistema se alinea después con su propia marca de inicio.
+    final useWallclock = !s.captureGpu;
+    final tsBase = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    // El micrófono (dshow) tarda ~1 s o más en abrir; va PRIMERO para que la
+    // captura de pantalla recién empiece cuando todo está listo y la
+    // grabación no incluya ese tiempo de espera.
     final args = <String>[
       '-y', '-hide_banner', '-loglevel', 'info',
-      ..._captureArgs(),
       if (useMic) ...[
         '-f', 'dshow', '-thread_queue_size', '1024',
+        if (useWallclock) ...['-use_wallclock_as_timestamps', '1'],
         '-i', 'audio=${s.micDevice}',
       ],
-      '-map', '0:v',
-      if (useMic) ...['-map', '1:a'],
+      ..._captureArgs(),
+      if (useWallclock) ...['-copyts', '-output_ts_offset', '-$tsBase'],
+      '-map', useMic ? '1:v' : '0:v',
+      if (useMic) ...['-map', '0:a'],
       ..._encoderArgs(),
       '-pix_fmt', 'yuv420p',
       '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-      '-r', '${s.fps}',
+      // Con -copyts, -r generaría cuadros duplicados desde 0: se conservan
+      // las marcas reales de cada cuadro (gdigrab ya entrega a la tasa pedida).
+      if (useWallclock) ...['-fps_mode', 'passthrough'] else ...['-r', '${s.fps}'],
       if (useMic) ...[
-        '-c:a', 'aac', '-b:a', '160k', '-ar', '48000',
+        // PCM en el segmento: se codifica a AAC una sola vez al mezclar.
+        '-c:a', 'pcm_s16le', '-ar', '48000',
         if (s.micVolume != 1.0) ...['-af', 'volume=${s.micVolume.toStringAsFixed(2)}'],
       ],
       video,
@@ -343,7 +366,8 @@ class Recorder extends ChangeNotifier {
       }
     });
 
-    final ok = await ready.future.timeout(const Duration(seconds: 6), onTimeout: () => false);
+    // Abrir el micrófono puede tardar varios segundos en PCs lentas o cargadas.
+    final ok = await ready.future.timeout(const Duration(seconds: 20), onTimeout: () => false);
     if (!ok) {
       lastError = 'ffmpeg no pudo iniciar la captura:\n${_logTail()}';
       try {
@@ -354,13 +378,17 @@ class Recorder extends ChangeNotifier {
       return false;
     }
 
-    final seg = _Segment(idx, video, sysWav)..hasMic = useMic;
+    final seg = _Segment(idx, video, sysWav)
+      ..hasMic = useMic
+      ..tsBase = useWallclock ? tsBase : null;
     if (sysWav != null) {
       try {
         await NativeBridge.loopbackStart(sysWav);
       } catch (e) {
         // Seguimos sin audio del sistema.
-        _segments.add(_Segment(idx, video, null)..hasMic = useMic);
+        _segments.add(_Segment(idx, video, null)
+          ..hasMic = useMic
+          ..tsBase = useWallclock ? tsBase : null);
         lastError = 'No se pudo capturar el audio del sistema: $e';
         notifyListeners();
         return true;
@@ -389,7 +417,8 @@ class Recorder extends ChangeNotifier {
       });
     }
     try {
-      await NativeBridge.loopbackStop();
+      final wavStart = await NativeBridge.loopbackStop();
+      if (_segments.isNotEmpty) _segments.last.wavStartEpochMs = wavStart;
     } catch (_) {}
   }
 
@@ -409,34 +438,56 @@ class Recorder extends ChangeNotifier {
       final wavOk = wav != null &&
           await File(wav).exists() &&
           (await File(wav).length()) > 1024;
-      if (!wavOk) {
-        pieces.add(seg.video);
+      final mixed = p.join(dir.path, 'mix_${i.toString().padLeft(3, '0')}.mkv');
+
+      if (!wavOk && !seg.hasMic) {
+        // Sin audio: solo normalizar las marcas de tiempo del segmento.
+        final r = await ff.run(['-i', seg.video, '-c', 'copy', mixed]);
+        if (!r.ok) throw Exception('no se pudo preparar el segmento:\n${r.tail}');
+        pieces.add(mixed);
         continue;
       }
-      final mixed = p.join(dir.path, 'mix_${i.toString().padLeft(3, '0')}.mkv');
-      final sysVol = s.systemVolume.toStringAsFixed(2);
-      final micVol = '1.00';
-      final List<String> args;
-      if (seg.hasMic) {
-        args = [
-          '-i', seg.video, '-i', wav,
-          '-filter_complex',
-          '[0:a]volume=$micVol[m];[1:a]volume=$sysVol[s];'
-              '[m][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]',
-          '-map', '0:v', '-map', '[a]',
-          '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
-          mixed,
-        ];
-      } else {
-        args = [
-          '-i', seg.video, '-i', wav,
-          '-filter_complex', '[1:a]volume=$sysVol[a]',
-          '-map', '0:v', '-map', '[a]',
-          '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
-          '-shortest',
-          mixed,
-        ];
+
+      // Desfase del WAV del sistema respecto del primer cuadro de video.
+      double delayMs = 0;
+      if (wavOk && seg.tsBase != null && seg.wavStartEpochMs > 0) {
+        final info = await ff.probe(seg.video);
+        if (info != null) {
+          final videoStartMs = (seg.tsBase! + info.start) * 1000.0;
+          delayMs = seg.wavStartEpochMs - videoStartMs;
+          // Valores absurdos (reloj cambiado, etc.): no compensar.
+          if (delayMs.abs() > 5000) delayMs = 0;
+        }
       }
+      final sysVol = s.systemVolume.toStringAsFixed(2);
+      final sysChain = <String>[
+        if (delayMs > 1) 'adelay=${delayMs.round()}:all=1',
+        if (delayMs < -1) ...['atrim=start=${(-delayMs / 1000).toStringAsFixed(3)}', 'asetpts=PTS-STARTPTS'],
+        'aresample=48000',
+        'volume=$sysVol',
+      ].join(',');
+      // El micrófono arranca más tarde que el video: se rellena con silencio
+      // al principio para conservar la sincronía.
+      const micChain = 'aresample=48000:async=1:first_pts=0';
+
+      final String graph;
+      if (seg.hasMic && wavOk) {
+        graph = '[0:a]$micChain[m];[1:a]$sysChain[s];'
+            '[m][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]';
+      } else if (seg.hasMic) {
+        graph = '[0:a]$micChain[a]';
+      } else {
+        graph = '[1:a]$sysChain[a]';
+      }
+      final args = [
+        '-i', seg.video,
+        if (wavOk) ...['-i', wav],
+        '-filter_complex', graph,
+        '-map', '0:v', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+        if (!seg.hasMic) '-shortest',
+        mixed,
+      ];
       final r = await ff.run(args);
       if (!r.ok) {
         throw Exception('mezcla de audio falló:\n${r.tail}');

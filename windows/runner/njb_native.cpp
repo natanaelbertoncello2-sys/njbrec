@@ -205,6 +205,7 @@ class LoopbackRecorder {
     if (!render_) render_client_.Reset();
 
     running_.store(true);
+    start_epoch_ms_ = 0;
     if (render_) {
       silence_thread_ = std::thread([this] { SilenceLoop(); });
     }
@@ -212,9 +213,11 @@ class LoopbackRecorder {
     return true;
   }
 
-  void Stop() {
+  /// Detiene la captura. Devuelve el instante (ms desde 1970, UTC) en que se
+  /// capturó la primera muestra del WAV, o 0 si no se pudo determinar.
+  double Stop() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!running_.load()) return;
+    if (!running_.load()) return 0;
     running_.store(false);
     if (capture_thread_.joinable()) capture_thread_.join();
     if (silence_thread_.joinable()) silence_thread_.join();
@@ -223,11 +226,32 @@ class LoopbackRecorder {
     capture_client_.Reset();
     render_.Reset();
     render_client_.Reset();
+    return start_epoch_ms_;
   }
 
   bool IsRunning() const { return running_.load(); }
 
  private:
+  // Convierte la posicion QPC (unidades de 100 ns) de un paquete WASAPI a
+  // milisegundos desde 1970, usando la hora del sistema actual como referencia.
+  static double QpcToEpochMs(UINT64 qpc_100ns) {
+    LARGE_INTEGER freq, now;
+    ::QueryPerformanceFrequency(&freq);
+    ::QueryPerformanceCounter(&now);
+    const double now_100ns =
+        static_cast<double>(now.QuadPart) * 10000000.0 / static_cast<double>(freq.QuadPart);
+    FILETIME ft;
+    ::GetSystemTimePreciseAsFileTime(&ft);
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    // FILETIME: 100 ns desde 1601; 116444736000000000 = 1601 -> 1970.
+    const double sys_epoch_ms =
+        (static_cast<double>(uli.QuadPart) - 116444736000000000.0) / 10000.0;
+    const double age_ms = (now_100ns - static_cast<double>(qpc_100ns)) / 10000.0;
+    return sys_epoch_ms - age_ms;
+  }
+
   void CaptureLoop() {
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     HRESULT hr = capture_client_->Start();
@@ -236,6 +260,7 @@ class LoopbackRecorder {
       ::CoUninitialize();
       return;
     }
+    bool first = true;
     while (running_.load()) {
       ::Sleep(10);
       UINT32 packet = 0;
@@ -243,8 +268,23 @@ class LoopbackRecorder {
         BYTE* data = nullptr;
         UINT32 frames = 0;
         DWORD flags = 0;
-        hr = capture_->GetBuffer(&data, &frames, &flags, nullptr, nullptr);
+        UINT64 qpc = 0;
+        hr = capture_->GetBuffer(&data, &frames, &flags, nullptr, &qpc);
         if (FAILED(hr)) break;
+        if (first) {
+          first = false;
+          start_epoch_ms_ = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)
+                                ? QpcToEpochMs(0) + 0  // sin dato fiable: ahora
+                                : QpcToEpochMs(qpc);
+          if (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) {
+            LARGE_INTEGER freq, now;
+            ::QueryPerformanceFrequency(&freq);
+            ::QueryPerformanceCounter(&now);
+            start_epoch_ms_ = QpcToEpochMs(static_cast<UINT64>(
+                static_cast<double>(now.QuadPart) * 10000000.0 /
+                static_cast<double>(freq.QuadPart)));
+          }
+        }
         if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
           writer_.WriteFrames(nullptr, frames);
         } else {
@@ -284,6 +324,7 @@ class LoopbackRecorder {
 
   std::mutex mutex_;
   std::atomic<bool> running_{false};
+  double start_epoch_ms_ = 0;
   std::thread capture_thread_;
   std::thread silence_thread_;
   ComPtr<IAudioClient> capture_client_;
@@ -376,8 +417,8 @@ void RegisterNjbNativeChannel(flutter::BinaryMessenger* messenger) {
             result->Error("loopback_error", error);
           }
         } else if (method == "loopbackStop") {
-          g_recorder.Stop();
-          result->Success(flutter::EncodableValue(true));
+          const double start_ms = g_recorder.Stop();
+          result->Success(flutter::EncodableValue(start_ms));
         } else if (method == "loopbackIsRunning") {
           result->Success(flutter::EncodableValue(g_recorder.IsRunning()));
         } else if (method == "listMonitors") {

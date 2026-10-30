@@ -44,8 +44,11 @@ class NativeBridge {
     await _channel.invokeMethod<bool>('loopbackStart', {'path': wavPath});
   }
 
-  static Future<void> loopbackStop() async {
-    await _channel.invokeMethod<bool>('loopbackStop');
+  /// Detiene la captura y devuelve el instante (ms desde 1970) de la primera
+  /// muestra grabada, o 0 si no se pudo determinar.
+  static Future<double> loopbackStop() async {
+    final v = await _channel.invokeMethod<num>('loopbackStop');
+    return (v ?? 0).toDouble();
   }
 
   static Future<bool> loopbackIsRunning() async {
